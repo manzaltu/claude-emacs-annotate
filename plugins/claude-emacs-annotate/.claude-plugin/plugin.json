@@ -1,0 +1,5 @@
+{
+  "name": "claude-emacs-annotate",
+  "description": "Emacs annotation skills for Claude Code",
+  "version": "1.0.0"
+}

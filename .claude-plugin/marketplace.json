@@ -1,0 +1,17 @@
+{
+  "name": "claude-emacs-annotate",
+  "owner": {
+    "name": "Yoav Orot"
+  },
+  "metadata": {
+    "description": "Emacs annotation skills for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "claude-emacs-annotate",
+      "source": "./plugins/claude-emacs-annotate",
+      "description": "Leave, clear, and respond to inline AI-authored annotations in Emacs",
+      "version": "1.0.0"
+    }
+  ]
+}
