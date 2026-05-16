@@ -1,0 +1,17 @@
+{
+  "name": "claude-emacs-annotate",
+  "owner": {
+    "name": "Yoav Orot"
+  },
+  "metadata": {
+    "description": "Emacs annotation skills for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "claude-emacs-annotate",
+      "source": "./plugins/claude-emacs-annotate",
+      "description": "Threaded inline code annotations in Emacs — Claude annotates diffs or any code per your instructions, replies to your comments, and answers threads you open anywhere in the code",
+      "version": "1.0.0"
+    }
+  ]
+}

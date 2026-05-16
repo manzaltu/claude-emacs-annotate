@@ -1,0 +1,5 @@
+{
+  "name": "claude-emacs-annotate",
+  "description": "Threaded inline code annotations in Emacs — Claude annotates diffs or any code per your instructions, replies to your comments, and answers threads you open anywhere in the code",
+  "version": "1.0.0"
+}
