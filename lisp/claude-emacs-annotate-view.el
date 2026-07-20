@@ -48,6 +48,21 @@ ones."
   :type 'natnum
   :group 'claude-emacs-annotate)
 
+(defcustom claude-emacs-annotate-tint-hue 60
+  "Hue of the region tint, in degrees on the color wheel.
+The default of 60 is yellow; 120 is green, 240 blue.  Applied at
+`claude-emacs-annotate-tint-saturation-percent' saturation."
+  :type 'natnum
+  :group 'claude-emacs-annotate)
+
+(defcustom claude-emacs-annotate-tint-saturation-percent 6
+  "Saturation percentage of the region tint's hue.
+The hue is applied at the exact lightness of the neutral
+`claude-emacs-annotate-tint-percent' shade, so it changes the tint's
+color, never its intensity.  Zero keeps the neutral tint."
+  :type 'natnum
+  :group 'claude-emacs-annotate)
+
 (defcustom claude-emacs-annotate-inline-tint-percent 35
   "Percentage by which the inline box panel shifts the background.
 Kept above `claude-emacs-annotate-tint-percent' so the thread box
@@ -83,6 +98,15 @@ readable on the inline panel background."
   :type 'natnum
   :group 'claude-emacs-annotate)
 
+(defcustom claude-emacs-annotate-fringe-indicator 'left-fringe
+  "Fringe carrying the per-thread expand/collapse indicator, nil for none.
+The indicator marks the last line of each annotated region: a plus
+sign while the thread box is collapsed, a minus sign while it is
+expanded (`claude-emacs-annotate-toggle-inline-at-point')."
+  :type '(choice (const left-fringe) (const right-fringe)
+                 (const :tag "No indicator" nil))
+  :group 'claude-emacs-annotate)
+
 (defcustom claude-emacs-annotate-flush-idle-delay 1.0
   "Idle seconds after an edit before overlay drift flushes to the store."
   :type 'number
@@ -113,6 +137,31 @@ readable on the inline panel background."
   "Face for inline thread box borders."
   :group 'claude-emacs-annotate)
 
+(defface claude-emacs-annotate-fringe-face
+  '((t :inherit success))
+  "Face for the per-thread expand/collapse fringe indicator."
+  :group 'claude-emacs-annotate)
+
+(when (fboundp 'define-fringe-bitmap)
+  (define-fringe-bitmap 'claude-emacs-annotate-fringe-plus
+    [#b00000000
+     #b00011000
+     #b00011000
+     #b01111110
+     #b01111110
+     #b00011000
+     #b00011000
+     #b00000000])
+  (define-fringe-bitmap 'claude-emacs-annotate-fringe-minus
+    [#b00000000
+     #b00000000
+     #b00000000
+     #b01111110
+     #b01111110
+     #b00000000
+     #b00000000
+     #b00000000]))
+
 ;;;; State
 
 (defvar claude-emacs-annotate-mode)
@@ -128,6 +177,12 @@ readable on the inline panel background."
 
 (defvar-local claude-emacs-annotate-inline nil
   "Non-nil when this buffer renders annotation threads inline.")
+
+(defvar-local claude-emacs-annotate--view-inline-overrides nil
+  "Alist of (THREAD-ID . SHOWN) per-thread inline overrides.
+Entries flip single threads away from the buffer-wide
+`claude-emacs-annotate-inline' default; the buffer-wide toggle
+clears them.")
 
 (defvar claude-emacs-annotate--view-pending-buffers nil
   "Buffers whose overlay drift awaits a flush.")
@@ -155,6 +210,13 @@ positive toward white, negative toward black.")
       (seq-filter (lambda (overlay)
                     (overlay-get overlay 'claude-emacs-annotate-id))
                   (overlays-in (point-min) (point-max))))))
+
+(defun claude-emacs-annotate--view-overlay-for (thread-id)
+  "Return this buffer's overlay carrying THREAD-ID, or nil."
+  (seq-find (lambda (overlay)
+              (equal (overlay-get overlay 'claude-emacs-annotate-id)
+                     thread-id))
+            (claude-emacs-annotate--view-overlays)))
 
 (defun claude-emacs-annotate--view-overlays-at (position)
   "Return annotation overlays at POSITION, most specific first."
@@ -361,30 +423,82 @@ face."
               'claude-emacs-annotate-inline-meta-face)
       'claude-emacs-annotate-inline-meta-face)))
 
+(defun claude-emacs-annotate--view-rehue (color hue percent)
+  "Return COLOR re-hued to HUE degrees at PERCENT saturation.
+Only the hue and saturation move; COLOR's lightness is kept, so the
+tint's intensity never changes.  A nil or undefined COLOR yields
+nil; a zero PERCENT yields COLOR unchanged."
+  (cond ((not (and (stringp color) (color-defined-p color))) nil)
+        ((zerop percent) color)
+        (t (pcase-let* ((`(,red ,green ,blue) (color-name-to-rgb color))
+                        (`(,_hue ,_saturation ,lightness)
+                         (color-rgb-to-hsl red green blue)))
+             (apply #'color-rgb-to-hex
+                    (append (color-hsl-to-rgb (/ hue 360.0)
+                                              (/ percent 100.0)
+                                              lightness)
+                            (list 2)))))))
+
 (defun claude-emacs-annotate--view-tint-color ()
-  "Return the annotated region's tint color, or nil when unavailable."
-  (claude-emacs-annotate--view-shade claude-emacs-annotate-tint-percent))
+  "Return the annotated region's tint color, or nil when unavailable.
+The default background shifted for contrast, then re-hued per
+`claude-emacs-annotate-tint-hue' so annotated lines read as
+annotated at a glance."
+  (claude-emacs-annotate--view-rehue
+   (claude-emacs-annotate--view-shade claude-emacs-annotate-tint-percent)
+   claude-emacs-annotate-tint-hue
+   claude-emacs-annotate-tint-saturation-percent))
 
 (defun claude-emacs-annotate--view-inline-tint-color ()
   "Return the inline box panel's tint color, or nil when unavailable."
   (claude-emacs-annotate--view-shade
    claude-emacs-annotate-inline-tint-percent))
 
+(defun claude-emacs-annotate--view-inline-shown-p (thread-id)
+  "Return non-nil when THREAD-ID's box renders inline in this buffer."
+  (let ((override (assoc thread-id
+                         claude-emacs-annotate--view-inline-overrides)))
+    (if override (cdr override) claude-emacs-annotate-inline)))
+
+(defun claude-emacs-annotate--view-fringe-string (expanded)
+  "Return the expand/collapse fringe indicator string, or nil.
+EXPANDED selects the minus bitmap, collapsed the plus.  Nil when the
+indicator is disabled or this Emacs has no fringe bitmaps."
+  (when (and claude-emacs-annotate-fringe-indicator
+             (fboundp 'define-fringe-bitmap))
+    (propertize (if expanded "-" "+")
+                'display (list claude-emacs-annotate-fringe-indicator
+                               (if expanded
+                                   'claude-emacs-annotate-fringe-minus
+                                 'claude-emacs-annotate-fringe-plus)
+                               'claude-emacs-annotate-fringe-face))))
+
 (defun claude-emacs-annotate--view-decorate (overlay thread)
-  "Paint OVERLAY for THREAD according to the display options."
-  (overlay-put overlay 'face
-               (or (and (eq claude-emacs-annotate-display-style 'tint)
-                        (when-let* ((color
-                                     (claude-emacs-annotate--view-tint-color)))
-                          (list :background color :extend t)))
-                   'claude-emacs-annotate-highlight-face))
-  (overlay-put overlay 'help-echo
-               (claude-emacs-annotate--view-summary thread))
-  (when claude-emacs-annotate-inline
-    (let ((box (claude-emacs-annotate--view-inline-string thread)))
-      (if (eq claude-emacs-annotate-inline-position 'above)
-          (overlay-put overlay 'before-string (concat box "\n"))
-        (overlay-put overlay 'after-string (concat "\n" box))))))
+  "Paint OVERLAY for THREAD according to the display options.
+The before/after strings are always assigned: per-thread toggles
+re-decorate a live overlay, so collapsing must clear the box it
+rendered.  The fringe indicator rides in the after-string, whose
+position is the end of the region's last line."
+  (let* ((expanded (claude-emacs-annotate--view-inline-shown-p
+                    (claude-emacs-annotate-thread-id thread)))
+         (above (eq claude-emacs-annotate-inline-position 'above))
+         (box (and expanded
+                   (claude-emacs-annotate--view-inline-string thread)))
+         (indicator (claude-emacs-annotate--view-fringe-string expanded)))
+    (overlay-put overlay 'face
+                 (or (and (eq claude-emacs-annotate-display-style 'tint)
+                          (when-let* ((color
+                                       (claude-emacs-annotate--view-tint-color)))
+                            (list :background color :extend t)))
+                     'claude-emacs-annotate-highlight-face))
+    (overlay-put overlay 'help-echo
+                 (claude-emacs-annotate--view-summary thread))
+    (overlay-put overlay 'before-string
+                 (and box above (concat box "\n")))
+    (overlay-put overlay 'after-string
+                 (cond ((and box (not above))
+                        (concat (or indicator "") "\n" box))
+                       (indicator)))))
 
 ;;;; Attach / detach
 
@@ -633,7 +747,8 @@ re-anchor by content."
     (remove-hook 'kill-buffer-hook
                  #'claude-emacs-annotate--view-flush-and-detach t)
     (setq claude-emacs-annotate--view-root nil)
-    (setq claude-emacs-annotate--view-relative-file nil)))
+    (setq claude-emacs-annotate--view-relative-file nil)
+    (setq claude-emacs-annotate--view-inline-overrides nil)))
 
 ;;;; Programmatic buffer operations
 
@@ -688,12 +803,7 @@ thread."
       (expand-file-name (claude-emacs-annotate-thread-file thread) root)))
     (unless claude-emacs-annotate-mode
       (claude-emacs-annotate-mode 1))
-    (let ((overlay (seq-find
-                    (lambda (candidate)
-                      (equal (overlay-get candidate
-                                          'claude-emacs-annotate-id)
-                             thread-id))
-                    (claude-emacs-annotate--view-overlays))))
+    (let ((overlay (claude-emacs-annotate--view-overlay-for thread-id)))
       (if overlay
           (goto-char (overlay-start overlay))
         (goto-char (point-min))
@@ -838,12 +948,34 @@ text is being written."
        (claude-emacs-annotate-thread-id thread)))))
 
 (defun claude-emacs-annotate-toggle-inline ()
-  "Toggle inline thread rendering in this buffer."
+  "Toggle inline thread rendering in this buffer.
+Per-thread toggles (`claude-emacs-annotate-toggle-inline-at-point')
+are reset: every thread lands on the new buffer-wide state."
   (interactive)
   (setq claude-emacs-annotate-inline (not claude-emacs-annotate-inline))
+  (setq claude-emacs-annotate--view-inline-overrides nil)
   (claude-emacs-annotate-view-attach)
   (message "Inline annotations %s"
            (if claude-emacs-annotate-inline "on" "off")))
+
+(defun claude-emacs-annotate-toggle-inline-at-point ()
+  "Toggle the inline thread box of the annotation at point.
+Overlapping annotations prompt for one, like the other at-point
+commands.  The per-thread state rides on top of the buffer-wide
+`claude-emacs-annotate-toggle-inline', which resets it."
+  (interactive)
+  (pcase-let* ((`(,_store . ,thread)
+                (claude-emacs-annotate--view-thread-at-point))
+               (id (claude-emacs-annotate-thread-id thread))
+               (shown (not (claude-emacs-annotate--view-inline-shown-p id))))
+    (setq claude-emacs-annotate--view-inline-overrides
+          (assoc-delete-all id
+                            claude-emacs-annotate--view-inline-overrides))
+    (unless (eq shown (and claude-emacs-annotate-inline t))
+      (push (cons id shown) claude-emacs-annotate--view-inline-overrides))
+    (when-let* ((overlay (claude-emacs-annotate--view-overlay-for id)))
+      (claude-emacs-annotate--view-decorate overlay thread))
+    (message "Annotation %s" (if shown "expanded" "collapsed"))))
 
 (defun claude-emacs-annotate-refresh ()
   "Rebuild this buffer's annotation overlays from the store."

@@ -86,6 +86,7 @@ the active region or the current line."
     (define-key map (kbd "l") #'claude-emacs-annotate-list)
     (define-key map (kbd "t") #'claude-emacs-annotate-thread-open-at-point)
     (define-key map (kbd "i") #'claude-emacs-annotate-toggle-inline)
+    (define-key map (kbd "o") #'claude-emacs-annotate-toggle-inline-at-point)
     (define-key map (kbd "s") #'claude-emacs-annotate-set-status-at-point)
     (define-key map (kbd "d") #'claude-emacs-annotate-delete-at-point)
     (define-key map (kbd "a") #'claude-emacs-annotate-reanchor)

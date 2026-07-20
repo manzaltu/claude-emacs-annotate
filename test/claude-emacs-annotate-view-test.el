@@ -378,6 +378,8 @@ Lighten-only shading clamps light backgrounds into invisible white
 and washes the meta foreground out; the direction must follow the
 theme."
   (let ((claude-emacs-annotate--view-shade-cache nil)
+        ;; Hue is out of scope here: this test pins the shift direction.
+        (claude-emacs-annotate-tint-saturation-percent 0)
         (theme-background "#fafafa"))
     (cl-letf (((symbol-function 'face-background)
                (lambda (&rest _) theme-background))
@@ -409,6 +411,112 @@ theme."
                          (plist-get (car dark-face) :foreground)))
           (should-not (equal (plist-get (car light-face) :foreground)
                              (plist-get (car dark-face) :foreground))))))))
+
+(ert-deftest cea-view-tint-carries-hue ()
+  "The region tint is hued at the neutral shade's lightness.
+The hue must never change the tint's intensity: the hued tint and
+the neutral shade differ in color, not in how strongly they shift
+the background."
+  (let ((claude-emacs-annotate--view-shade-cache nil)
+        (claude-emacs-annotate-tint-hue 60)
+        (theme-background nil))
+    (cl-letf (((symbol-function 'face-background)
+               (lambda (&rest _) theme-background))
+              ((symbol-function 'color-values)
+               (lambda (spec &optional _frame)
+                 (tty-color-standard-values spec))))
+      (dolist (background '("#282c34" "#fafafa"))
+        (setq theme-background background)
+        (pcase-let* ((tint (claude-emacs-annotate--view-tint-color))
+                     (shade (claude-emacs-annotate--view-shade
+                             claude-emacs-annotate-tint-percent))
+                     (`(,red ,green ,blue) (color-name-to-rgb tint)))
+          ;; Yellow: red and green sit above blue.
+          (should (> red blue))
+          (should (> green blue))
+          (should-not (equal tint shade))
+          ;; Same lightness as the neutral shade, up to hex rounding.
+          (should (< (abs (- (caddr (apply #'color-rgb-to-hsl
+                                           (color-name-to-rgb tint)))
+                             (caddr (apply #'color-rgb-to-hsl
+                                           (color-name-to-rgb shade)))))
+                     0.01)))))))
+
+(ert-deftest cea-view-toggle-inline-at-point-is-per-thread ()
+  "Per-thread toggling collapses one box and leaves the others alone."
+  (cea-test-with-env
+    (cea-test-file-lines "ti.el" '("a1" "a2" "a3" "a4"))
+    (let ((t1 (cea-test-api-create "ti.el" 1 1 :text "first prose"))
+          (t2 (cea-test-api-create "ti.el" 3 3 :text "second prose")))
+      (cea-view-test--with-buffer "ti.el"
+        (should (string-match-p
+                 "first prose"
+                 (overlay-get (cea-view-test--overlay-for t1)
+                              'after-string)))
+        ;; Collapse the first thread only.
+        (goto-char (overlay-start (cea-view-test--overlay-for t1)))
+        (claude-emacs-annotate-toggle-inline-at-point)
+        (should-not (string-match-p
+                     "first prose"
+                     (or (overlay-get (cea-view-test--overlay-for t1)
+                                      'after-string)
+                         "")))
+        (should (string-match-p
+                 "second prose"
+                 (overlay-get (cea-view-test--overlay-for t2)
+                              'after-string)))
+        ;; And expand it back.
+        (claude-emacs-annotate-toggle-inline-at-point)
+        (should (string-match-p
+                 "first prose"
+                 (overlay-get (cea-view-test--overlay-for t1)
+                              'after-string)))))))
+
+(ert-deftest cea-view-buffer-toggle-resets-thread-overrides ()
+  "The buffer-wide toggle overrides earlier per-thread toggles.
+A per-thread collapse must not survive a buffer-wide off/on cycle:
+`claude-emacs-annotate-toggle-inline' lands every thread on the new
+state."
+  (cea-test-with-env
+    (cea-test-file-lines "tb.el" '("b1" "b2" "b3"))
+    (let ((thread (cea-test-api-create "tb.el" 1 1 :text "prose here")))
+      (cea-view-test--with-buffer "tb.el"
+        (goto-char (overlay-start (cea-view-test--overlay-for thread)))
+        (claude-emacs-annotate-toggle-inline-at-point) ; collapse the thread
+        (claude-emacs-annotate-toggle-inline)          ; buffer-wide off
+        (claude-emacs-annotate-toggle-inline)          ; buffer-wide on
+        (should (string-match-p
+                 "prose here"
+                 (overlay-get (cea-view-test--overlay-for thread)
+                              'after-string)))))))
+
+(ert-deftest cea-view-fringe-indicator-tracks-expansion ()
+  "Expanded threads show a minus in the fringe, collapsed a plus.
+The indicator rides at the front of the after-string, whose position
+is the end of the region's last line."
+  (skip-unless (fboundp 'define-fringe-bitmap))
+  (cea-test-with-env
+    (cea-test-file-lines "fr.el" '("c1" "c2" "c3"))
+    (let ((thread (cea-test-api-create "fr.el" 1 2 :text "note")))
+      (cea-view-test--with-buffer "fr.el"
+        (let ((after (overlay-get (cea-view-test--overlay-for thread)
+                                  'after-string)))
+          ;; Expanded by default: the minus bitmap, box behind it.
+          (should (equal (list claude-emacs-annotate-fringe-indicator
+                               'claude-emacs-annotate-fringe-minus
+                               'claude-emacs-annotate-fringe-face)
+                         (get-text-property 0 'display after)))
+          (should (string-match-p "note" after)))
+        (goto-char (point-min))
+        (claude-emacs-annotate-toggle-inline-at-point)
+        (let ((after (overlay-get (cea-view-test--overlay-for thread)
+                                  'after-string)))
+          ;; Collapsed: the plus bitmap alone, no box.
+          (should (equal (list claude-emacs-annotate-fringe-indicator
+                               'claude-emacs-annotate-fringe-plus
+                               'claude-emacs-annotate-fringe-face)
+                         (get-text-property 0 'display after)))
+          (should-not (string-match-p "note" after)))))))
 
 (ert-deftest cea-view-state-badges-name-staleness ()
   "Stale is the only badged state; fresh shows nothing."

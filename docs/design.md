@@ -45,7 +45,7 @@ The model here:
 | `claude-emacs-annotate-anchor.el` | Anchor capture (from buffers or straight from disk) and the resolve procedure below. |
 | `claude-emacs-annotate-store.el` | Per-project store, roots and project detection, atomic write-through, mtime guard + merge, tombstones, file watcher, change events. |
 | `claude-emacs-annotate-api.el` | The programmatic contract: explicit roots, no buffer dependence, typed errors, `:expect-file` preconditions, JSON transport. |
-| `claude-emacs-annotate-view.el` | Buffer minor mode, overlays, tint/highlight styles, inline thread boxes, the flush engine and revert brackets. |
+| `claude-emacs-annotate-view.el` | Buffer minor mode, overlays, tint/highlight styles, inline thread boxes (buffer-wide and per-thread expand/collapse with fringe indicators), the flush engine and revert brackets. |
 | `claude-emacs-annotate-table.el` | Project-wide `tabulated-list` of threads, rendered from the store with anchors resolved against on-disk content. |
 | `claude-emacs-annotate-thread.el` | Per-thread view buffers and commit-style reply/edit buffers (no singleton state). |
 | `claude-emacs-annotate.el` | Entry point: globalized mode, DWIM command, command map. |
