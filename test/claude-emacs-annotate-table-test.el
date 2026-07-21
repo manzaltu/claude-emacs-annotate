@@ -169,6 +169,29 @@ just the one currently selected."
       (revert-buffer)
       (should (= 4 (length (cea-table-test--rows)))))))
 
+(ert-deftest cea-table-global-tag-filter-composes-and-counts ()
+  "The global tag filter hides rows; the mode line notes shown/total."
+  (cea-test-with-env
+    (cea-test-project-file "g.el" "a\nb\nc\n")
+    (cea-table-test--make "g.el" 1 1 :tag "keep")
+    (cea-table-test--make "g.el" 2 2 :tag "keep")
+    (cea-table-test--make "g.el" 3 3 :tag "drop")
+    (let ((claude-emacs-annotate-filter-tag "keep"))
+      (cea-table-test--with-table
+        (should (= 2 (length (cea-table-test--rows))))
+        (should (equal ": 2/3" mode-line-process))
+        ;; The local tag filter composes on top of the global one.
+        (setq claude-emacs-annotate--table-filter-tag "drop")
+        (revert-buffer)
+        (should (= 0 (length (cea-table-test--rows))))
+        (should (equal ": 0/3" mode-line-process))
+        ;; Clearing both restores every row and the plain mode line.
+        (setq claude-emacs-annotate--table-filter-tag nil)
+        (setq claude-emacs-annotate-filter-tag nil)
+        (revert-buffer)
+        (should (= 3 (length (cea-table-test--rows))))
+        (should (null mode-line-process))))))
+
 ;;;; Actions
 
 (ert-deftest cea-table-goto-opens-file-at-overlay ()

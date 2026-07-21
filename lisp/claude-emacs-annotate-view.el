@@ -219,10 +219,14 @@ positive toward white, negative toward black.")
             (claude-emacs-annotate--view-overlays)))
 
 (defun claude-emacs-annotate--view-overlays-at (position)
-  "Return annotation overlays at POSITION, most specific first."
-  (sort (seq-filter (lambda (overlay)
-                      (overlay-get overlay 'claude-emacs-annotate-id))
-                    (overlays-at position))
+  "Return annotation overlays at POSITION, most specific first.
+Overlays of threads hidden by the tag filter are not annotations as
+far as point is concerned: they are excluded, so at-point commands
+and the dwim entry cannot reach a filtered thread."
+  (sort (claude-emacs-annotate--view-visible-overlays
+         (seq-filter (lambda (overlay)
+                       (overlay-get overlay 'claude-emacs-annotate-id))
+                     (overlays-at position)))
         (lambda (a b)
           (< (- (overlay-end a) (overlay-start a))
              (- (overlay-end b) (overlay-start b))))))
@@ -231,6 +235,26 @@ positive toward white, negative toward black.")
   "Return this buffer's project store, or nil when none exists yet."
   (and claude-emacs-annotate--view-root
        (claude-emacs-annotate-store-get claude-emacs-annotate--view-root t)))
+
+(defun claude-emacs-annotate--view-visible-overlays (overlays)
+  "Return OVERLAYS minus those hidden by the tag filter.
+Without an active filter OVERLAYS pass through untouched.  With one,
+an overlay survives only when its thread still exists and carries the
+filter tag -- hidden threads keep their overlays purely as position
+trackers, invisible to every command."
+  (if (null claude-emacs-annotate-filter-tag)
+      overlays
+    (let ((store (claude-emacs-annotate--view-store)))
+      (seq-filter
+       (lambda (overlay)
+         (when-let* ((thread
+                      (and store
+                           (claude-emacs-annotate-store-thread
+                            store
+                            (overlay-get overlay
+                                         'claude-emacs-annotate-id)))))
+           (not (claude-emacs-annotate-thread-filtered-p thread))))
+       overlays))))
 
 (defun claude-emacs-annotate--view-line-bounds (start-line end-line)
   "Return buffer positions (START . END) spanning START-LINE..END-LINE."
@@ -478,21 +502,30 @@ indicator is disabled or this Emacs has no fringe bitmaps."
 The before/after strings are always assigned: per-thread toggles
 re-decorate a live overlay, so collapsing must clear the box it
 rendered.  The fringe indicator rides in the after-string, whose
-position is the end of the region's last line."
-  (let* ((expanded (claude-emacs-annotate--view-inline-shown-p
-                    (claude-emacs-annotate-thread-id thread)))
+position is the end of the region's last line.  A thread hidden by
+the tag filter renders nothing at all -- no tint, no box, no
+indicator, no summary; its overlay survives purely to keep tracking
+the region."
+  (let* ((filtered (claude-emacs-annotate-thread-filtered-p thread))
+         (expanded (and (not filtered)
+                        (claude-emacs-annotate--view-inline-shown-p
+                         (claude-emacs-annotate-thread-id thread))))
          (above (eq claude-emacs-annotate-inline-position 'above))
          (box (and expanded
                    (claude-emacs-annotate--view-inline-string thread)))
-         (indicator (claude-emacs-annotate--view-fringe-string expanded)))
+         (indicator (and (not filtered)
+                         (claude-emacs-annotate--view-fringe-string
+                          expanded))))
     (overlay-put overlay 'face
-                 (or (and (eq claude-emacs-annotate-display-style 'tint)
-                          (when-let* ((color
-                                       (claude-emacs-annotate--view-tint-color)))
-                            (list :background color :extend t)))
-                     'claude-emacs-annotate-highlight-face))
+                 (unless filtered
+                   (or (and (eq claude-emacs-annotate-display-style 'tint)
+                            (when-let* ((color
+                                         (claude-emacs-annotate--view-tint-color)))
+                              (list :background color :extend t)))
+                       'claude-emacs-annotate-highlight-face)))
     (overlay-put overlay 'help-echo
-                 (claude-emacs-annotate--view-summary thread))
+                 (unless filtered
+                   (claude-emacs-annotate--view-summary thread)))
     (overlay-put overlay 'before-string
                  (and box above (concat box "\n")))
     (overlay-put overlay 'after-string
@@ -863,8 +896,12 @@ stays selectable."
 
 (defun claude-emacs-annotate--view-overlay-starts ()
   "Return this buffer's annotation start positions, sorted.
-Signal a `user-error' when the buffer has none."
-  (or (sort (mapcar #'overlay-start (claude-emacs-annotate--view-overlays))
+Threads hidden by the tag filter are skipped -- navigation never
+stops on an invisible annotation.  Signal a `user-error' when the
+buffer has none."
+  (or (sort (mapcar #'overlay-start
+                    (claude-emacs-annotate--view-visible-overlays
+                     (claude-emacs-annotate--view-overlays)))
             #'<)
       (user-error "No annotations in this buffer")))
 
@@ -978,6 +1015,45 @@ commands.  The per-thread state rides on top of the buffer-wide
   (claude-emacs-annotate-view-attach)
   (message "Annotations refreshed"))
 
+(defun claude-emacs-annotate--view-redecorate ()
+  "Repaint this buffer's overlays from current store data.
+Purely visual: no anchor resolution and no store writes, so display
+option changes (like the tag filter) apply without touching disk."
+  (when-let* ((store (claude-emacs-annotate--view-store)))
+    (dolist (overlay (claude-emacs-annotate--view-overlays))
+      (if-let* ((thread (claude-emacs-annotate-store-thread
+                         store
+                         (overlay-get overlay 'claude-emacs-annotate-id))))
+          (claude-emacs-annotate--view-decorate overlay thread)
+        (delete-overlay overlay)))))
+
+(defun claude-emacs-annotate-filter-by-tag ()
+  "Set the tag filter and refresh every annotation view.
+With a tag, only threads carrying it exist as far as the UI is
+concerned; other threads vanish entirely -- no tint, no inline box,
+no fringe indicator, no table row, and no command reaches them: not
+at point, not navigation, not the jump prompt.  Entering nothing
+clears the filter.  The filter is global: annotated buffers and
+tables of every project follow it."
+  (interactive)
+  (let* ((root (claude-emacs-annotate-project-root))
+         (store (and root (claude-emacs-annotate-store-get root t)))
+         (tags (and store (claude-emacs-annotate-store-tags store)))
+         (choice (completing-read "Filter tag (empty shows all): " tags)))
+    (setq claude-emacs-annotate-filter-tag
+          (unless (string-empty-p choice) choice))
+    (claude-emacs-annotate--map-buffers
+     (lambda ()
+       (cond (claude-emacs-annotate-mode
+              (claude-emacs-annotate--view-redecorate)
+              (force-mode-line-update))
+             ((derived-mode-p 'claude-emacs-annotate-table-mode)
+              (revert-buffer)))))
+    (if claude-emacs-annotate-filter-tag
+        (message "Showing annotations tagged %s"
+                 claude-emacs-annotate-filter-tag)
+      (message "Showing all annotations"))))
+
 (defun claude-emacs-annotate--view-region-lines (start end)
   "Return the region START..END as inclusive lines (START-LINE . END-LINE).
 A region whose end sits at the beginning of a line does not include
@@ -1000,7 +1076,8 @@ the buffer."
           (min (max start-line end-line) total))))
 
 (defun claude-emacs-annotate-reanchor (start end)
-  "Re-pin a stale thread of this file to the region (START to END)."
+  "Re-pin a stale thread of this file to the region (START to END).
+Threads hidden by the tag filter are not offered."
   (interactive (if (use-region-p)
                    (list (region-beginning) (region-end))
                  (list (line-beginning-position) (line-end-position))))
@@ -1008,10 +1085,12 @@ the buffer."
                     (user-error "No annotations in this project")))
          (stale (seq-filter
                  (lambda (thread)
-                   (eq 'stale
-                       (plist-get (claude-emacs-annotate-thread-anchor
-                                   thread)
-                                  :state)))
+                   (and (eq 'stale
+                            (plist-get (claude-emacs-annotate-thread-anchor
+                                        thread)
+                                       :state))
+                        (not (claude-emacs-annotate-thread-filtered-p
+                              thread))))
                  (claude-emacs-annotate-store-threads-for-file
                   store claude-emacs-annotate--view-relative-file))))
     (unless stale

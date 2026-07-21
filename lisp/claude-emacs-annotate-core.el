@@ -62,6 +62,19 @@ login name."
   :type '(choice (const :tag "Use user-full-name" nil) string)
   :group 'claude-emacs-annotate)
 
+(defcustom claude-emacs-annotate-filter-tag nil
+  "Tag the displays are filtered by, nil for no filtering.
+When set, only threads carrying this tag exist as far as the UI is
+concerned: the other threads render nothing -- no tint, no inline
+box, no fringe indicator, no table row -- and no interactive command
+reaches them, whether at point, by navigation or from the jump
+prompt.  Set interactively with
+`claude-emacs-annotate-filter-by-tag'.  The store is never filtered
+-- every thread stays persisted and addressable through the API."
+  :type '(choice (const :tag "Show all annotations" nil)
+                 (string :tag "Tag"))
+  :group 'claude-emacs-annotate)
+
 (defcustom claude-emacs-annotate-tombstone-ttl-days 30
   "Days a deletion tombstone is kept before being garbage collected.
 Tombstones prevent deleted threads from being resurrected when
@@ -275,6 +288,14 @@ a defensive fallback for malformed data."
     (or (seq-find (lambda (comment) (null (plist-get comment :parent-id)))
                   comments)
         (car comments))))
+
+(defun claude-emacs-annotate-thread-filtered-p (thread)
+  "Return non-nil when THREAD is hidden by the active tag filter.
+Nil whenever `claude-emacs-annotate-filter-tag' is nil or THREAD
+carries the filter tag."
+  (and claude-emacs-annotate-filter-tag
+       (not (member claude-emacs-annotate-filter-tag
+                    (claude-emacs-annotate-thread-tags thread)))))
 
 (defun claude-emacs-annotate-thread-root-author (thread)
   "Return the author of THREAD's root comment, or nil.

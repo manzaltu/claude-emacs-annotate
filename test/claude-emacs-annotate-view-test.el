@@ -490,6 +490,138 @@ state."
                  (overlay-get (cea-view-test--overlay-for thread)
                               'after-string)))))))
 
+;;;; Tag filter
+
+(ert-deftest cea-view-filter-hides-thread-entirely ()
+  "A filter-hidden thread renders nothing -- no tint, box or summary.
+The overlay itself survives, but only as an invisible position
+tracker."
+  (cea-test-with-env
+    (cea-test-file-lines "gf.el" '("a1" "a2" "a3" "a4"))
+    (let ((shown (cea-test-api-create "gf.el" 1 1 :text "kept prose"
+                                      :tag "keep"))
+          (hidden (cea-test-api-create "gf.el" 3 3 :text "dropped prose"
+                                       :tag "drop"))
+          (claude-emacs-annotate-filter-tag "keep"))
+      (cea-view-test--with-buffer "gf.el"
+        (let ((kept (cea-view-test--overlay-for shown))
+              (dropped (cea-view-test--overlay-for hidden)))
+          ;; Both overlays exist -- hidden threads keep tracking...
+          (should kept)
+          (should dropped)
+          ;; ...but only the matching thread renders anything at all.
+          (should (overlay-get kept 'face))
+          (should (string-match-p "kept prose"
+                                  (overlay-get kept 'after-string)))
+          (should (overlay-get kept 'help-echo))
+          (should-not (overlay-get dropped 'face))
+          (should-not (overlay-get dropped 'after-string))
+          (should-not (overlay-get dropped 'before-string))
+          (should-not (overlay-get dropped 'help-echo)))))))
+
+(ert-deftest cea-view-filter-at-point-ignores-hidden ()
+  "At-point commands treat a filter-hidden annotation as absent."
+  (cea-test-with-env
+    (cea-test-file-lines "gt.el" '("b1" "b2"))
+    (let ((thread (cea-test-api-create "gt.el" 1 1 :tag "drop"))
+          (claude-emacs-annotate-filter-tag "keep"))
+      (cea-view-test--with-buffer "gt.el"
+        (goto-char (overlay-start (cea-view-test--overlay-for thread)))
+        (should-not (claude-emacs-annotate--view-overlays-at (point)))
+        (should-error (claude-emacs-annotate-toggle-inline-at-point)
+                      :type 'user-error)
+        (should-error (claude-emacs-annotate-set-status-at-point)
+                      :type 'user-error)))))
+
+(ert-deftest cea-view-filter-overlap-picks-visible-without-prompt ()
+  "A hidden thread overlapping a visible one never reaches the prompt.
+With one visible candidate left at point, it is returned directly."
+  (cea-test-with-env
+    (cea-test-file-lines "go.el" '("c1" "c2"))
+    (let ((visible (cea-test-api-create "go.el" 1 1 :text "seen"
+                                        :tag "keep"))
+          (claude-emacs-annotate-filter-tag "keep"))
+      (cea-test-api-create "go.el" 1 2 :text "unseen" :tag "drop")
+      (cea-view-test--with-buffer "go.el"
+        (goto-char (point-min))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _) (error "The prompt must not open"))))
+          (pcase-let ((`(,_store . ,thread)
+                       (claude-emacs-annotate--view-thread-at-point)))
+            (should (equal (claude-emacs-annotate-thread-id visible)
+                           (claude-emacs-annotate-thread-id thread)))))))))
+
+(ert-deftest cea-view-filter-navigation-skips-hidden ()
+  "Next/previous never stop on a filter-hidden annotation."
+  (cea-test-with-env
+    (cea-test-file-lines "gn.el" '("d1" "d2" "d3" "d4" "d5"))
+    (cea-test-api-create "gn.el" 1 1 :tag "keep")
+    (cea-test-api-create "gn.el" 3 3 :tag "drop")
+    (cea-test-api-create "gn.el" 5 5 :tag "keep")
+    (let ((claude-emacs-annotate-filter-tag "keep"))
+      (cea-view-test--with-buffer "gn.el"
+        (goto-char (point-min))
+        ;; Forward from line 1 skips hidden line 3, landing on line 5.
+        (claude-emacs-annotate-next)
+        (should (= 5 (line-number-at-pos (point) t)))
+        ;; Backward from line 5 skips it too, returning to line 1.
+        (claude-emacs-annotate-previous)
+        (should (= 1 (line-number-at-pos (point) t)))))))
+
+(ert-deftest cea-view-filter-navigation-errors-when-all-hidden ()
+  (cea-test-with-env
+    (cea-test-file-lines "ge.el" '("e1"))
+    (cea-test-api-create "ge.el" 1 1 :tag "drop")
+    (let ((claude-emacs-annotate-filter-tag "keep"))
+      (cea-view-test--with-buffer "ge.el"
+        (should-error (claude-emacs-annotate-next) :type 'user-error)))))
+
+(ert-deftest cea-view-filter-reanchor-skips-hidden ()
+  "Re-anchoring never offers a filter-hidden stale thread."
+  (cea-test-with-env
+    (cea-test-file-lines "gr.el" '("f1" "f2" "f3"))
+    (cea-test-api-create "gr.el" 2 2 :tag "drop")
+    ;; Rewrite the file entirely: the anchor goes stale.
+    (cea-test-file-lines "gr.el" '("totally" "different" "lines"))
+    (let ((claude-emacs-annotate-filter-tag "keep"))
+      (cea-view-test--with-buffer "gr.el"
+        (should-error (claude-emacs-annotate-reanchor 1 1)
+                      :type 'user-error)))))
+
+(ert-deftest cea-view-filter-command-repaints-live-buffers ()
+  "Setting the filter interactively repaints open annotated buffers."
+  (cea-test-with-env
+    (cea-test-file-lines "gc.el" '("d1" "d2" "d3" "d4"))
+    (let ((kept (cea-test-api-create "gc.el" 1 1 :text "kept prose"
+                                     :tag "keep"))
+          (hidden (cea-test-api-create "gc.el" 3 3 :text "dropped prose"
+                                       :tag "drop"))
+          (claude-emacs-annotate-filter-tag nil))
+      (cea-view-test--with-buffer "gc.el"
+        (should (string-match-p
+                 "dropped prose"
+                 (overlay-get (cea-view-test--overlay-for hidden)
+                              'after-string)))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _) "keep")))
+          (claude-emacs-annotate-filter-by-tag))
+        (should (equal "keep" claude-emacs-annotate-filter-tag))
+        (should-not (overlay-get (cea-view-test--overlay-for hidden)
+                                 'after-string))
+        (should (string-match-p
+                 "kept prose"
+                 (overlay-get (cea-view-test--overlay-for kept)
+                              'after-string)))
+        ;; Empty input clears the filter and the boxes return.
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _) "")))
+          (claude-emacs-annotate-filter-by-tag))
+        (should (null claude-emacs-annotate-filter-tag))
+        (should (string-match-p
+                 "dropped prose"
+                 (overlay-get (cea-view-test--overlay-for hidden)
+                              'after-string)))))))
+
 (ert-deftest cea-view-fringe-indicator-tracks-expansion ()
   "Expanded threads show a minus in the fringe, collapsed a plus.
 The indicator rides at the front of the after-string, whose position

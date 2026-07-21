@@ -78,12 +78,15 @@ Fresh anchors show nothing; stale ones flag an S."
                   summary))))
 
 (defun claude-emacs-annotate--table-threads ()
-  "Return this table's threads after applying its filters."
+  "Return this table's threads after applying its filters.
+The buffer-local tag/author/status filters compose with the global
+`claude-emacs-annotate-filter-tag'."
   (when-let* ((store (claude-emacs-annotate-store-get
                       claude-emacs-annotate--table-root t)))
     (seq-filter
      (lambda (thread)
-       (and (or (null claude-emacs-annotate--table-filter-tag)
+       (and (not (claude-emacs-annotate-thread-filtered-p thread))
+            (or (null claude-emacs-annotate--table-filter-tag)
                 (member claude-emacs-annotate--table-filter-tag
                         (claude-emacs-annotate-thread-tags thread)))
             (or (null claude-emacs-annotate--table-filter-author)
@@ -99,10 +102,19 @@ Fresh anchors show nothing; stale ones flag an S."
   "Recompute `tabulated-list-entries' from the store.
 Anchors are resolved against on-disk content (in temp buffers, no
 files are visited), so the state and line columns report the files
-as they are now rather than as last persisted."
-  (let* ((threads (claude-emacs-annotate--table-threads))
+as they are now rather than as last persisted.  When any filter
+hides threads, the mode line notes shown/total."
+  (let* ((store (claude-emacs-annotate-store-get
+                 claude-emacs-annotate--table-root t))
+         (total (length (and store
+                             (claude-emacs-annotate-store-all-threads
+                              store))))
+         (threads (claude-emacs-annotate--table-threads))
          (resolved (claude-emacs-annotate--api-resolve-anchors
                     claude-emacs-annotate--table-root threads)))
+    (setq mode-line-process
+          (and (< (length threads) total)
+               (format ": %d/%d" (length threads) total)))
     (setq tabulated-list-entries
           (mapcar (lambda (thread)
                     (claude-emacs-annotate--table-entry
