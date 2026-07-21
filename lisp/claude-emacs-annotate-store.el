@@ -615,6 +615,15 @@ nothing applied."
             (gethash id (claude-emacs-annotate-store--threads store)))
           (gethash file (claude-emacs-annotate-store--by-file store))))
 
+(defun claude-emacs-annotate-store-tags (store)
+  "Return the distinct tags across STORE's threads.
+Order follows the store's deterministic thread order; tag completion
+prompts offer these as candidates."
+  (seq-uniq (mapcan (lambda (thread)
+                      (copy-sequence
+                       (claude-emacs-annotate-thread-tags thread)))
+                    (claude-emacs-annotate-store-all-threads store))))
+
 ;;;; File watching
 
 (defun claude-emacs-annotate--store-watch (store)

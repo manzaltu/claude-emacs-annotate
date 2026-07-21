@@ -626,14 +626,15 @@ is the end of the region's last line."
         (should (= 1 (length (claude-emacs-annotate--view-overlays))))))))
 
 (ert-deftest cea-view-create-command-composes-in-buffer ()
-  "The create command opens a compose buffer, never the echo area."
+  "The create command opens a compose buffer, never the minibuffer."
   (cea-test-with-env
     (cea-test-file-lines "cc.el" '("a1" "a2" "a3"))
     (cea-view-test--with-buffer "cc.el"
       (goto-char (point-min))
       (forward-line 1)                  ; on "a2", line 2
-      ;; Only the short tag prompt may use the minibuffer.
-      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "")))
+      ;; No prompt at all: the tag is set inside the compose buffer.
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) (error "Create must not prompt"))))
         (claude-emacs-annotate-create (line-beginning-position)
                                       (line-end-position)))
       (let ((edit (get-buffer "*claude-annotation new: cc.el:2*")))
@@ -655,19 +656,6 @@ is the end of the region's last line."
                        (claude-emacs-annotate-comment-text
                         (claude-emacs-annotate-thread-root-comment
                          (car threads)))))))))
-
-(ert-deftest cea-view-create-rejects-invalid-tag-before-composing ()
-  (cea-test-with-env
-    (cea-test-file-lines "vt.el" '("b1" "b2"))
-    (cea-view-test--with-buffer "vt.el"
-      (goto-char (point-min))
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) "bad tag!")))
-        (should-error (claude-emacs-annotate-create
-                       (line-beginning-position) (line-end-position))
-                      :type 'user-error))
-      ;; No compose buffer was opened.
-      (should-not (get-buffer "*claude-annotation new: vt.el:1*")))))
 
 (ert-deftest cea-view-reanchor-repairs-stale ()
   (cea-test-with-env

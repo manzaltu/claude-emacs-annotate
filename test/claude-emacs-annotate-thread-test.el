@@ -265,6 +265,140 @@ another file sharing its basename and start line."
         (should (= 2 (plist-get (claude-emacs-annotate-thread-anchor thread)
                                 :end-line)))))))
 
+(ert-deftest cea-thread-edit-set-tag-attaches-to-committed-thread ()
+  (cea-test-with-env
+    (cea-test-project-file "tg.el" "line one\n")
+    (let* ((anchor (with-temp-buffer
+                     (insert "line one\n")
+                     (claude-emacs-annotate-anchor-capture 1 1)))
+           (edit (claude-emacs-annotate--thread-compose-create
+                  cea-test-project "tg.el" anchor nil 1)))
+      (unwind-protect
+          (with-current-buffer edit
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _) "review-1")))
+              (claude-emacs-annotate-edit-set-tag))
+            ;; The header line advertises the tag about to be attached.
+            (should (string-match-p
+                     "review-1" (claude-emacs-annotate--thread-edit-header)))
+            (insert "tagged body")
+            (claude-emacs-annotate-edit-commit))
+        (when (buffer-live-p edit) (kill-buffer edit)))
+      (let ((thread (car (claude-emacs-annotate-api-query cea-test-project))))
+        (should (equal '("review-1")
+                       (claude-emacs-annotate-thread-tags thread)))))))
+
+(ert-deftest cea-thread-edit-set-tag-completes-over-project-tags ()
+  "The tag prompt offers the project's existing tags as candidates.
+Free input still names a brand-new tag: the completion never
+requires a match."
+  (cea-test-with-env
+    (cea-test-project-file "ta.el" "line one\n")
+    (cea-test-api-create "ta.el" 1 1 :tag "existing-set")
+    (let* ((anchor (with-temp-buffer
+                     (insert "line one\n")
+                     (claude-emacs-annotate-anchor-capture 1 1)))
+           (edit (claude-emacs-annotate--thread-compose-create
+                  cea-test-project "ta.el" anchor nil 1))
+           (candidates nil)
+           (matched nil))
+      (unwind-protect
+          (with-current-buffer edit
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection _predicate require-match
+                                        &rest _)
+                         (setq candidates collection)
+                         (setq matched require-match)
+                         "brand-new")))
+              (claude-emacs-annotate-edit-set-tag))
+            (should (member "existing-set" candidates))
+            (should-not matched)
+            (should (equal "brand-new"
+                           (plist-get
+                            (cdr claude-emacs-annotate--thread-action)
+                            :tag))))
+        (when (buffer-live-p edit) (kill-buffer edit))))))
+
+(ert-deftest cea-thread-edit-set-tag-empty-input-clears ()
+  (cea-test-with-env
+    (cea-test-project-file "tc.el" "line one\n")
+    (let* ((anchor (with-temp-buffer
+                     (insert "line one\n")
+                     (claude-emacs-annotate-anchor-capture 1 1)))
+           (edit (claude-emacs-annotate--thread-compose-create
+                  cea-test-project "tc.el" anchor "pre-set" 1)))
+      (unwind-protect
+          (with-current-buffer edit
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _) "")))
+              (claude-emacs-annotate-edit-set-tag))
+            (insert "untagged body")
+            (claude-emacs-annotate-edit-commit))
+        (when (buffer-live-p edit) (kill-buffer edit)))
+      (let ((thread (car (claude-emacs-annotate-api-query cea-test-project))))
+        (should (null (claude-emacs-annotate-thread-tags thread)))))))
+
+(ert-deftest cea-thread-edit-set-tag-rejects-invalid ()
+  (cea-test-with-env
+    (cea-test-project-file "ti.el" "line one\n")
+    (let* ((anchor (with-temp-buffer
+                     (insert "line one\n")
+                     (claude-emacs-annotate-anchor-capture 1 1)))
+           (edit (claude-emacs-annotate--thread-compose-create
+                  cea-test-project "ti.el" anchor "good" 1)))
+      (unwind-protect
+          (with-current-buffer edit
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (&rest _) "bad tag!")))
+              (should-error (claude-emacs-annotate-edit-set-tag)
+                            :type 'user-error))
+            ;; The draft keeps its previous tag.
+            (should (equal "good"
+                           (plist-get
+                            (cdr claude-emacs-annotate--thread-action)
+                            :tag))))
+        (when (buffer-live-p edit) (kill-buffer edit))))))
+
+(ert-deftest cea-thread-edit-set-tag-refuses-outside-create ()
+  (cea-test-with-env
+    (let ((edit (claude-emacs-annotate--thread-edit-buffer
+                 cea-test-project "th-x" (cons 'reply "c-x"))))
+      (unwind-protect
+          (with-current-buffer edit
+            (should-error (claude-emacs-annotate-edit-set-tag)
+                          :type 'user-error))
+        (when (buffer-live-p edit) (kill-buffer edit))))))
+
+(ert-deftest cea-thread-compose-create-reuse-keeps-draft-tag ()
+  "Re-invoking create at the same spot keeps the tag like the text."
+  (cea-test-with-env
+    (let ((anchor '(:kind region :start-line 1 :end-line 1 :state fresh))
+          edit)
+      (unwind-protect
+          (progn
+            (setq edit (claude-emacs-annotate--thread-compose-create
+                        cea-test-project "k.el" anchor nil 1))
+            (with-current-buffer edit
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (&rest _) "kept-tag")))
+                (claude-emacs-annotate-edit-set-tag)))
+            (should (eq edit (claude-emacs-annotate--thread-compose-create
+                              cea-test-project "k.el" anchor nil 1)))
+            (with-current-buffer edit
+              (should (equal "kept-tag"
+                             (plist-get
+                              (cdr claude-emacs-annotate--thread-action)
+                              :tag))))
+            ;; An explicit tag still wins over the kept one.
+            (claude-emacs-annotate--thread-compose-create
+             cea-test-project "k.el" anchor "explicit" 1)
+            (with-current-buffer edit
+              (should (equal "explicit"
+                             (plist-get
+                              (cdr claude-emacs-annotate--thread-action)
+                              :tag)))))
+        (when (buffer-live-p edit) (kill-buffer edit))))))
+
 (ert-deftest cea-thread-compose-create-empty-commit-refuses ()
   (cea-test-with-env
     (cea-test-project-file "m.el" "only line\n")

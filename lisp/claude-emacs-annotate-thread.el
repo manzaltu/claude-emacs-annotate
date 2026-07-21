@@ -245,18 +245,33 @@
 (defvar-keymap claude-emacs-annotate-edit-mode-map
   :doc "Keymap of `claude-emacs-annotate-edit-mode'."
   "C-c C-c" #'claude-emacs-annotate-edit-commit
-  "C-c C-k" #'claude-emacs-annotate-edit-cancel)
+  "C-c C-k" #'claude-emacs-annotate-edit-cancel
+  "C-c C-t" #'claude-emacs-annotate-edit-set-tag)
+
+(defun claude-emacs-annotate--thread-edit-header ()
+  "Render the header line of an annotation edit buffer.
+New-annotation drafts also advertise the tag binding and the tag
+currently set on the draft."
+  (concat
+   (substitute-command-keys
+    " Commit: \\[claude-emacs-annotate-edit-commit]   Cancel: \\[claude-emacs-annotate-edit-cancel]")
+   (pcase claude-emacs-annotate--thread-action
+     (`(create . ,spec)
+      (concat (substitute-command-keys
+               "   Tag: \\[claude-emacs-annotate-edit-set-tag]")
+              (when-let* ((tag (plist-get spec :tag)))
+                (format " [%s]" tag)))))))
 
 (define-derived-mode claude-emacs-annotate-edit-mode text-mode
   "Annotation-Edit"
   "Major mode for composing annotation text.
 Used for new annotations, replies and comment edits.  Commit with
 \\[claude-emacs-annotate-edit-commit]; cancel with
-\\[claude-emacs-annotate-edit-cancel]."
+\\[claude-emacs-annotate-edit-cancel].  On a new-annotation draft,
+\\[claude-emacs-annotate-edit-set-tag] sets or clears the tag."
   (setq-local fill-column claude-emacs-annotate-inline-fill-column)
   (setq header-line-format
-        (substitute-command-keys
-         " Commit: \\[claude-emacs-annotate-edit-commit]   Cancel: \\[claude-emacs-annotate-edit-cancel]"))
+        '(:eval (claude-emacs-annotate--thread-edit-header)))
   (visual-line-mode 1))
 
 (defun claude-emacs-annotate--thread-pop-to-edit (buffer)
@@ -287,9 +302,12 @@ START-LINE (nil for whole-file drafts)."
 ROOT and project-relative FILE locate the annotation; ANCHOR was
 captured from the originating buffer when the command fired, so the
 annotated content is pinned even if that buffer changes while the
-text is being written.  TAG optionally names the annotation set;
-START-LINE labels the buffer name and, with ROOT and FILE, decides
-which existing draft buffer counts as the same spot."
+text is being written.  TAG optionally names the annotation set; nil
+keeps whatever tag a reused draft already carries, and the draft's
+tag can be changed with \\<claude-emacs-annotate-edit-mode-map>\
+\\[claude-emacs-annotate-edit-set-tag] at any point.  START-LINE
+labels the buffer name and, with ROOT and FILE, decides which
+existing draft buffer counts as the same spot."
   (let* ((canon (claude-emacs-annotate--normalize-root root))
          (buffer
           (or (seq-find (lambda (candidate)
@@ -301,11 +319,17 @@ which existing draft buffer counts as the same spot."
                        (file-name-nondirectory file)
                        (or start-line "file"))))))
     (with-current-buffer buffer
-      (claude-emacs-annotate-edit-mode)
-      (setq claude-emacs-annotate--thread-root canon)
-      (setq claude-emacs-annotate--thread-id nil)
-      (setq claude-emacs-annotate--thread-action
-            (cons 'create (list :file file :anchor anchor :tag tag))))
+      ;; A reused draft keeps the tag typed into it, exactly like its
+      ;; text -- read before the mode call wipes the buffer locals.
+      (let ((kept (unless tag
+                    (pcase claude-emacs-annotate--thread-action
+                      (`(create . ,spec) (plist-get spec :tag))))))
+        (claude-emacs-annotate-edit-mode)
+        (setq claude-emacs-annotate--thread-root canon)
+        (setq claude-emacs-annotate--thread-id nil)
+        (setq claude-emacs-annotate--thread-action
+              (cons 'create (list :file file :anchor anchor
+                                  :tag (or tag kept))))))
     ;; Deliberately no erase: commit and cancel both kill the buffer,
     ;; so any surviving content is an uncommitted draft the user typed
     ;; -- re-invoking create at the same spot must not clobber it.
@@ -381,6 +405,35 @@ ring and the buffer survives so nothing typed is ever lost."
     (if (window-live-p (get-buffer-window buffer))
         (quit-window t (get-buffer-window buffer))
       (kill-buffer buffer))))
+
+(defun claude-emacs-annotate-edit-set-tag ()
+  "Set or clear the tag of the new annotation drafted in this buffer.
+The tag is read in the minibuffer, completing over the project's
+existing tags; any other input names a new tag, and empty input
+clears the draft's.  Validation is immediate.  Only new-annotation
+drafts carry a tag -- replies and comment edits refuse."
+  (interactive)
+  (pcase claude-emacs-annotate--thread-action
+    (`(create . ,spec)
+     (let* ((store (claude-emacs-annotate-store-get
+                    claude-emacs-annotate--thread-root t))
+            (tags (and store (claude-emacs-annotate-store-tags store)))
+            (input (string-trim (completing-read "Tag (empty to clear): "
+                                                 tags nil nil
+                                                 (plist-get spec :tag)))))
+       (setq claude-emacs-annotate--thread-action
+             (cons 'create
+                   (plist-put spec :tag
+                              (unless (string-empty-p input)
+                                (condition-case err
+                                    (claude-emacs-annotate--check-tag input)
+                                  (claude-emacs-annotate-invalid
+                                   (user-error "%s" (cadr err))))))))
+       (force-mode-line-update)
+       (if (string-empty-p input)
+           (message "Tag cleared")
+         (message "Tag: %s" input))))
+    (_ (user-error "Only new annotation drafts take a tag"))))
 
 ;;;; Store events keep thread views honest
 

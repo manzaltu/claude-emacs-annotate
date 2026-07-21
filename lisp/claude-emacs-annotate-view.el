@@ -894,10 +894,10 @@ Signal a `user-error' when the buffer has none."
 The annotation text is written in a compose buffer shown in a small
 window below -- commit it with \\<claude-emacs-annotate-edit-mode-map>\
 \\[claude-emacs-annotate-edit-commit], cancel with
-\\[claude-emacs-annotate-edit-cancel].  Only the short optional tag is
-read in the minibuffer.  The anchor is captured from the buffer the
-moment this command fires, so the selection stays pinned while the
-text is being written."
+\\[claude-emacs-annotate-edit-cancel], and attach an optional tag
+with \\[claude-emacs-annotate-edit-set-tag].  The anchor is captured
+from the buffer the moment this command fires, so the selection stays
+pinned while the text is being written."
   (interactive (if (use-region-p)
                    (list (region-beginning) (region-end))
                  (list (line-beginning-position) (line-end-position))))
@@ -908,21 +908,14 @@ text is being written."
   (pcase-let* ((`(,start-line . ,end-line)
                 (claude-emacs-annotate--view-region-lines start end))
                (anchor (claude-emacs-annotate-anchor-capture
-                        start-line end-line))
-               (tag (let ((input (string-trim
-                                  (read-string "Tag (optional): "))))
-                      (unless (string-empty-p input)
-                        (condition-case err
-                            (claude-emacs-annotate--check-tag input)
-                          (claude-emacs-annotate-invalid
-                           (user-error "%s" (cadr err))))))))
+                        start-line end-line)))
     (deactivate-mark)
     (require 'claude-emacs-annotate-thread)
     (claude-emacs-annotate--thread-pop-to-edit
      (claude-emacs-annotate--thread-compose-create
       claude-emacs-annotate--view-root
       claude-emacs-annotate--view-relative-file
-      anchor tag start-line))))
+      anchor nil start-line))))
 
 (defun claude-emacs-annotate-set-status-at-point ()
   "Change the status of the annotation at point."
