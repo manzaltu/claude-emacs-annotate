@@ -1054,6 +1054,64 @@ tables of every project follow it."
                  claude-emacs-annotate-filter-tag)
       (message "Showing all annotations"))))
 
+(defun claude-emacs-annotate--view-jump-label (thread)
+  "Return THREAD's minibuffer candidate label, FILE:LINE plus summary.
+Whole-file threads carry no start line and label as FILE alone."
+  (let ((file (claude-emacs-annotate-thread-file thread))
+        (line (plist-get (claude-emacs-annotate-thread-anchor thread)
+                         :start-line)))
+    (format "%s  %s"
+            (if line (format "%s:%s" file line) file)
+            (claude-emacs-annotate--view-summary thread))))
+
+;;;###autoload
+(defun claude-emacs-annotate-jump ()
+  "Jump to an annotation thread picked from the minibuffer.
+Candidates cover the whole project, ordered by file and line and
+labeled with FILE:LINE plus the thread's one-line summary.  Threads
+hidden by the global `claude-emacs-annotate-filter-tag' are not
+offered.  The chosen thread's file is displayed the same way the
+annotation table displays it."
+  (interactive)
+  (let* ((root (or (claude-emacs-annotate-project-root)
+                   (user-error "Not inside a project")))
+         (store (claude-emacs-annotate-store-get root t))
+         (threads
+          (and store
+               (sort (seq-remove #'claude-emacs-annotate-thread-filtered-p
+                                 (claude-emacs-annotate-store-all-threads
+                                  store))
+                     #'claude-emacs-annotate--api-thread<))))
+    (unless threads
+      (user-error "No annotations%s in this project"
+                  (if claude-emacs-annotate-filter-tag
+                      (format " tagged %s" claude-emacs-annotate-filter-tag)
+                    "")))
+    (let* ((seen (make-hash-table :test #'equal))
+           (candidates
+            (mapcar (lambda (thread)
+                      (let* ((base (claude-emacs-annotate--view-jump-label
+                                    thread))
+                             (copies (gethash base seen 0)))
+                        (puthash base (1+ copies) seen)
+                        (cons (if (zerop copies)
+                                  base
+                                (format "%s <%d>" base copies))
+                              thread)))
+                    threads))
+           (choice (completing-read
+                    "Annotation: "
+                    (lambda (string pred action)
+                      (if (eq action 'metadata)
+                          '(metadata (display-sort-function . identity)
+                                     (cycle-sort-function . identity))
+                        (complete-with-action action candidates
+                                              string pred)))
+                    nil t)))
+      (claude-emacs-annotate-view-goto-thread
+       root
+       (claude-emacs-annotate-thread-id (cdr (assoc choice candidates)))))))
+
 (defun claude-emacs-annotate--view-region-lines (start end)
   "Return the region START..END as inclusive lines (START-LINE . END-LINE).
 A region whose end sits at the beginning of a line does not include

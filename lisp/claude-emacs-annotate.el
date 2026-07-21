@@ -84,6 +84,7 @@ the active region or the current line."
     (define-key map (kbd "n") #'claude-emacs-annotate-next)
     (define-key map (kbd "p") #'claude-emacs-annotate-previous)
     (define-key map (kbd "l") #'claude-emacs-annotate-list)
+    (define-key map (kbd "j") #'claude-emacs-annotate-jump)
     (define-key map (kbd "t") #'claude-emacs-annotate-thread-open-at-point)
     (define-key map (kbd "i") #'claude-emacs-annotate-toggle-inline)
     (define-key map (kbd "o") #'claude-emacs-annotate-toggle-inline-at-point)

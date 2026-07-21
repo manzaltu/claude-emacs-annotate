@@ -622,6 +622,56 @@ With one visible candidate left at point, it is returned directly."
                  (overlay-get (cea-view-test--overlay-for hidden)
                               'after-string)))))))
 
+(ert-deftest cea-view-jump-completes-filtered-threads ()
+  "The jump command offers only filter-visible threads and lands on
+the picked one's file and line."
+  (cea-test-with-env
+    (cea-test-file-lines "ja.el" '("a1" "a2" "a3"))
+    (cea-test-file-lines "jb.el" '("b1" "b2"))
+    (cea-test-api-create "ja.el" 2 2 :text "alpha note" :tag "keep")
+    (cea-test-api-create "jb.el" 1 1 :text "beta note" :tag "drop")
+    (let ((claude-emacs-annotate-filter-tag "keep")
+          (offered nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (setq offered (all-completions "" collection))
+                   (car offered))))
+        (claude-emacs-annotate-jump))
+      (unwind-protect
+          (progn
+            (should (= 1 (length offered)))
+            (should (string-match-p "\\`ja\\.el:2 " (car offered)))
+            (should (string-match-p "alpha note" (car offered)))
+            (should (equal "ja.el" (file-relative-name buffer-file-name
+                                                       cea-test-project)))
+            (should (= 2 (line-number-at-pos (point) t))))
+        (kill-buffer (current-buffer))))))
+
+(ert-deftest cea-view-jump-duplicate-labels-stay-selectable ()
+  "Threads with identical labels get distinct candidates."
+  (cea-test-with-env
+    (cea-test-file-lines "jd.el" '("d1" "d2"))
+    (cea-test-api-create "jd.el" 1 1 :text "same")
+    (cea-test-api-create "jd.el" 1 1 :text "same")
+    (let ((offered nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (setq offered (all-completions "" collection))
+                   (cadr offered))))
+        (claude-emacs-annotate-jump))
+      (unwind-protect
+          (progn
+            (should (= 2 (length offered)))
+            (should-not (equal (car offered) (cadr offered))))
+        (kill-buffer (current-buffer))))))
+
+(ert-deftest cea-view-jump-errors-when-filter-hides-everything ()
+  (cea-test-with-env
+    (cea-test-file-lines "jc.el" '("c1"))
+    (cea-test-api-create "jc.el" 1 1 :tag "drop")
+    (let ((claude-emacs-annotate-filter-tag "keep"))
+      (should-error (claude-emacs-annotate-jump) :type 'user-error))))
+
 (ert-deftest cea-view-fringe-indicator-tracks-expansion ()
   "Expanded threads show a minus in the fringe, collapsed a plus.
 The indicator rides at the front of the after-string, whose position
